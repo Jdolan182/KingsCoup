@@ -1,0 +1,30 @@
+# Unreal Engine generated/cache folders — machine-local, regenerated automatically
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Visual Studio / Rider / IDE
+.vs/
+.idea/
+*.opensdf
+*.opendb
+*.sdf
+*.sln
+*.suo
+*.VC.db
+*.VC.opendb
+*.xcodeproj
+*.xcworkspace
+
+# Compiled/cache files
+*.bin
+*.pdb
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude Code local (per-machine) settings
+.claude/settings.local.json
