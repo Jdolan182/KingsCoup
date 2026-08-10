@@ -89,13 +89,17 @@ Content Browser → Add → Blueprints → Blueprint Interface.
 
 ## Phase 5 — Combat components & unit base classes
 
+All classes in this phase go in `Content/Blueprints/Combat`.
+
 1. Create Actor Components: `BP_StatsComponent`, `BP_ResourceComponent`, `BP_AbilityLoadoutComponent`, `BP_StatusEffectComponent`, `BP_EnemyBrainComponent` (implements `BPI_EnemyBrain`, holds default pattern-list logic reading its owner's `DA_EnemyDefinition`).
+   - `BP_ResourceComponent` also needs `CurrentHP`/`CurrentMP` (Integer, matching `F_CharacterRuntimeState`'s types) alongside `SpecialGauge` — during a battle these are the live, depleting working copies; `F_CharacterRuntimeState` only holds the persistent value read at spawn and written back at battle-end.
    - In `BP_StatsComponent`, add a pure function `CalculateLeveledStat(Base, Scale, Level, Max) -> float` = `Clamp(Base + (Base × Scale) × (Level - 1), 0, Max)` — this is your confirmed spreadsheet formula, verified exact against your Level 3/50/99 sample rows. Call it once per field of `DA_CharacterDefinition.BaseStats`/`GrowthScale` (now 7 fields: Str/Vit/Int/Spr/Spd with Max 255, plus MaxHP with Max 9999 and MaxMP with Max 999).
    - Add `GetEffectiveStats() -> F_CoreStats` that recomputes fresh every call: `CalculateLeveledStat(...) per stat + EarnedBonusStats + equipped-weapon DirectStatModifiers + Skill Wheel passives + status effects`. Don't cache/accumulate this — it's what makes MC growth changes (Phase 10) apply retroactively for free.
    - Add `GetGearCombatStats() -> F_GearCombatStats` — sums the equipped weapon's and armor's `GearStats` (Atk/Armor/MagicAtk/MagicArmor). Kept separate from `GetEffectiveStats()` since it's a distinct stat layer per your design.
-2. Create `BP_CombatUnitBase` (parent: Actor). Add the four non-brain components. Implement `BPI_ActionSource` and `BPI_Targetable`.
-3. Create `BP_PlayerCombatUnit` (parent: CombatUnitBase). On BeginPlay, pull this character's `F_CharacterRuntimeState` from `BP_PartyManager` and initialize the components. Add `MulticlassComponent` (only active if `CharacterID == BP_PartyManager.MainCharacterID`; reads the standalone `MainCharacterMulticlassPicks`, not the per-character struct) and `GuestAssistComponent`.
-4. Create `BP_EnemyCombatUnit` (parent: CombatUnitBase). On BeginPlay, initialize from a `DA_EnemyDefinition` reference and add `BP_EnemyBrainComponent`.
+   - Also create `BP_MulticlassComponent` and `BP_GuestAssistComponent` here (parent: Actor Component) — leave both **empty** for now. Their real logic doesn't land until Phase 10 (multiclass blending) and Phase 12 (guest moves) respectively; they just need to exist so `BP_PlayerCombatUnit` has somewhere to attach them in step 3.
+2. Create `BP_CombatUnitBase` (parent: Actor). Add the four non-brain components (`BP_StatsComponent`, `BP_ResourceComponent`, `BP_AbilityLoadoutComponent`, `BP_StatusEffectComponent`). Implement `BPI_ActionSource` and `BPI_Targetable`. Add a `bIsEnemySide` (Boolean) variable that `IsEnemyUnit` just returns — subclasses set its default differently rather than overriding the function.
+3. Create `BP_PlayerCombatUnit` (parent: CombatUnitBase). Add `CharacterID` (Object Ref, Soft → `DA_CharacterDefinition`), plus the `BP_MulticlassComponent` and `BP_GuestAssistComponent` components from step 1. Set `bIsEnemySide` default to `false`. On BeginPlay, pull this character's `F_CharacterRuntimeState` from `BP_PartyManager.RosterState` (matched by `CharacterID`) and initialize the components — `CurrentHP`/`CurrentMP` carry over from last time.
+4. Create `BP_EnemyCombatUnit` (parent: CombatUnitBase). Add `EnemyDefinition` (Object Ref, Soft → `DA_EnemyDefinition`), `Level` (Integer), plus `BP_EnemyBrainComponent`. Set `bIsEnemySide` default to `true`. On BeginPlay, initialize `StatsComponent` from `EnemyDefinition.BaseStats`/`GrowthScale` + `Level`, and set `CurrentHP`/`CurrentMP` to the freshly-computed Max values (enemies always spawn full health, no persistent record to carry over).
 
 ## Phase 6 — Turn Manager & Combat GameMode
 
