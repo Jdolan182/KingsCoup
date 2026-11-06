@@ -59,12 +59,13 @@ GM_Combat (GameModeBase)                           — reads EncounterManager + 
                                                        on BeginPlay, spawns party + enemy units
 GS_Combat (GameState)                               — current battle phase, exposed for UI binding
 
-BP_TurnManager (spawned by GM_Combat)                — CTB (FFX-style) scheduler, not a simple sort
-  — each unit has a TurnCounter (float) that increases every tick by its effective Spd; first to
-    cross the action threshold acts, then that unit's counter resets
-  — handles action economy via the counter: Quick → partial/no reset (acts again sooner), Standard →
-    normal reset, Long → action logged now, resolves once this unit's counter next crosses the
-    threshold
+BP_TurnManager (spawned by GM_Combat)                — meter-based scheduler, no Timer / fixed ticks
+  — each unit has a TurnMeter (float) on BP_CombatUnitBase; the manager works out (100 - meter) / Spd
+    for every living unit, the smallest acts next, and everyone's meter jumps forward by that time
+    (exact turn ratios at any Speed); the actor then subtracts 100 and the leftover carries over
+  — one-time random starting meter (StartJitter) at battle start only; Speed is read fresh each time,
+    so buffs apply live
+  — action economy (later) is the amount subtracted: Quick → less, Standard → 100, Long → deferred
   — evaluates "Help" as a standard action targeting a unit/threat expected to act soon
   — fires BP events for UI/animation: OnTurnStart, OnActionQueued, OnActionResolved
 

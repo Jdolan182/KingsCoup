@@ -105,16 +105,36 @@ All classes in this phase go in `Content/Blueprints/Combat`.
 
 ## Phase 6 — Turn Manager & Combat GameMode
 
-1. Create `BP_TurnManager` (parent: Actor or Object, spawned by GM_Combat). This is a **CTB (FFX-style) scheduler**, not a simple sort-once queue — Speed needs to affect both who goes first *and* how often, so a fixed round-robin order doesn't fit. Give each active unit a `TurnCounter` (float). On a repeating timer/tick, call `AdvanceSchedule()`: increase every unit's `TurnCounter` by their `GetEffectiveStats().Spd`; whoever first reaches the action threshold takes their turn. On resolving an action: Standard resets that unit's counter to 0, Quick resets it less (or not at all, so it comes back around sooner), Long lets the counter keep past the threshold and defers the actual effect until the *next* time that unit crosses it. Function `ResolveHelpAction(ActingUnit, TargetThreat)`. Event dispatchers: `OnTurnStart`, `OnActionQueued`, `OnActionResolved`.
-2. Create `GM_Combat` (parent: GameModeBase). On BeginPlay: read `BP_EncounterManager.PendingFormation` and `BP_PartyManager.GetCurrentPartyGroup().ActiveMemberIDs`, spawn `BP_PlayerCombatUnit`/`BP_EnemyCombatUnit` instances at spawn points, spawn `BP_TurnManager`, start its schedule.
-3. Create `GS_Combat` (parent: GameState). Add `E_BattlePhase` (Intro/InProgress/Victory/Defeat).
+1. Create `BP_TurnManager` (parent: Actor, `Content/Blueprints/Combat`, spawned by GM_Combat). This is a **meter-based scheduler with no Timer and no fixed ticks** — Speed affects both who goes first *and* how often. (The earlier timer/`AdvanceSchedule` design was dropped: fixed steps cap high-Speed units at one turn per step and break turn ratios.)
+   - **On `BP_CombatUnitBase`:** `TurnMeter` (Float, 0) and `TurnManager` (`BP_TurnManager`, hard ref — set by `TakeNextTurn` before `TakeTurn`).
+   - **On `BP_TurnManager`:** `ActiveUnits` (Array of `BP_CombatUnitBase`, hard), `ActionThreshold` (Float, 100), `StartJitter` (Float, 15 — tunable), `ReviveStartMeter` (Float, 0 — tunable, unused until revive exists), dispatchers `OnTurnStart(ActingUnit)` and `OnActionResolved(ActingUnit, Target)` (both `BP_CombatUnitBase`, hard).
+   - `InitializeCombat(Units: Array<BP_CombatUnitBase>)`: clear `ActiveUnits`, copy `Units` in, set each unit's `TurnMeter = Random Float in Range(0, StartJitter)` — the **one-time** initiative roll (D&D feel), never repeated. Then call `TakeNextTurn`.
+   - `IsAlive(Unit) -> Boolean` (pure): `Unit.GetBP_ResourceComponent.GetCurrentHP > 0`.
+   - `TakeNextTurn()`: for each living unit, `Spd = GetSpeed()` and `ThisTime = Max((ActionThreshold − TurnMeter) / Spd, 0)`. The smallest `ThisTime` acts next (tie → higher Spd; still tied → first in the array, so `GM_Combat` adds players before enemies). If nobody is alive, stop. Otherwise add `GetSpeed × BestTime` to every living unit's `TurnMeter`, set the actor's `TurnMeter` to exactly `ActionThreshold` (avoids float drift), set `TurnManager = Self`, broadcast `OnTurnStart`, then call `TakeTurn()`. Speed is read fresh every time, so buffs apply live with no extra code.
+   - `ResolveTurn(ActingUnit, Ability, Target)` (`Ability` is a hard `DA_AbilityDefinition`; units are hard `BP_CombatUnitBase`): `ExecuteAbility` → `OnActionResolved` → `ActingUnit.TurnMeter −= ActionThreshold` (leftover carries over) → `StatusEffectComponent.TickDurations` on the acting unit → if `GetOpposingUnits(ActingUnit)` is empty the battle is over (set `GS_Combat.BattlePhase`), otherwise `TakeNextTurn`.
+   - `GetOpposingUnits(RequestingUnit) -> Array<BP_CombatUnitBase>`: living units in `ActiveUnits` whose `IsEnemyUnit` differs from the requester's. This is also what finally fills `SelectNextAction`'s target.
+   - `ResolveHelpAction(ActingUnit, TargetThreat)`: empty stub for now.
+   - **Stat floor:** `GetEffectiveStats` clamps Str/Vit/Int/Spr/Spd to a minimum of 1 (applied after future modifiers); MaxHP/MaxMP may be 0. This also means Speed can never be 0, so the time division is safe.
+   - **Dead units:** skipped by `IsAlive`. Revive (not built yet) will set the meter to `ReviveStartMeter` so how it feels can be tuned later.
+   - **Status durations:** a status with Duration N ticks down at the end of the *affected unit's own* turns, and an effect a unit casts on itself skips the tick for the turn it was cast.
+   - **Action categories (Quick/Standard/Long) and Haste/Slow are NOT in the first pass** — every action costs 100. The settled rules are in the table below and will change how much `ResolveTurn` subtracts. Haste/Slow are category-shifts only; plain Speed buffs/debuffs are ordinary stat modifiers (exact Haste behaviour to be tuned by feel later).
+   - Quick's exact meter cost is still open: "immediate bonus turn" (subtract ~0, capped at one chain) vs subtracting ~50.
+
+   | Base category | Normal | Hasted | Slowed |
+   |---|---|---|---|
+   | Quick | 1 bonus chain (max) | unchanged | acts like Standard |
+   | Standard | normal | acts like Quick | acts like Long |
+   | Long | resolves at start of next turn, +1 normal turn | acts like Standard | unchanged |
+2. Create `GM_Combat` (parent: GameModeBase, `Content/Blueprints/Combat`). Variables: `TurnManager` (`BP_TurnManager`, hard), `SpawnedUnits` (Array of `BP_CombatUnitBase`, hard). On BeginPlay: get the game instance's `PartyManager` and `EncounterManager`, read `GetCurrentPartyGroup().ActiveMemberIDs` (Array of soft `DA_CharacterDefinition`) and the pending formation's entries (`F_EncounterEntry`: `Enemy` soft `DA_EnemyDefinition`, `SpawnSlotIndex` Integer, `Level` Integer). Spawn **players first**, then enemies, adding each to `SpawnedUnits`. On the unit classes tick Instance Editable + Expose on Spawn for `CharacterID`, `EnemyID` and `Level`, so `Spawn Actor from Class` sets them before `BeginPlay`. Then spawn `BP_TurnManager`, set `TurnManager`, and call `InitializeCombat(SpawnedUnits)` (which starts the first turn). If the formation is empty, fall back to one test player and one test enemy. Spawn points: Target Points tagged `PlayerSpawn` / `EnemySpawn`.
+3. Create `GS_Combat` (parent: **GameStateBase**, to pair with GameModeBase). Add `E_BattlePhase` (Intro/InProgress/Victory/Defeat, in `Content/Blueprints/Core`) and a `BattlePhase` variable.
+   - **First playtest scope:** player units auto-use `DA_Ability_BasicAttack` on a random living enemy (the Phase 7 menu replaces this); placeholder damage is `EffectMagnitude + Str − target Vit`, minimum 1, with a `Print String` of damage and remaining HP for tuning.
 4. Create your Battle level, set its World Settings → GameMode Override to `GM_Combat`.
 
 ## Phase 7 — Combat UI + first playtest
 
 1. Create `WBP_BattleHUD` — per-unit HP/MP/Gauge bars, bound to `BP_StatsComponent`/`BP_ResourceComponent` via event dispatchers (`OnStatsChanged`).
 2. Create `WBP_ActionMenu` — buttons (Attack/Ability/Item/Guard/Help/Guest) that read the acting unit's `BP_AbilityLoadoutComponent` and submit the chosen action to `BP_TurnManager`.
-3. Create `WBP_TurnOrderBar` — bound to `BP_TurnManager`'s current queue.
+3. Create `WBP_TurnOrderBar` — do this **last** in Phase 7, once turns work. It needs a `BP_TurnManager` function that simulates the next few turns from copies of the current meters (without changing the real ones); for the first playtest just print the acting unit's name.
 4. Add the HUD widget to viewport from `GM_Combat` or its PlayerController's BeginPlay.
 5. **Playtest checkpoint:** place one `BP_PlayerCombatUnit` and one `BP_EnemyCombatUnit` (using your Phase 2 test data assets) directly in the Battle level, PIE, and verify a full turn resolves correctly — action selection, damage, HP updates, and win/lose triggers `GS_Combat`'s phase change. Fix anything broken here before moving on.
 
